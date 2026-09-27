@@ -1,6 +1,7 @@
 # Copyright © 2026, UChicago Argonne, LLC. See "LICENSE" for full details.
 
 import os
+import sys
 
 from types import SimpleNamespace
 
@@ -491,6 +492,12 @@ def test_hkl_map_notice_when_hkl_missing(qapp):
     assert dialog.image_item.image is not None
 
 
+@pytest.mark.skipif(
+    sys.platform == 'darwin'
+    and sys.version_info[:2] == (3, 12)
+    and os.environ.get('QT_QPA_PLATFORM') == 'offscreen',
+    reason=('PySide6 offscreen progress dialogs crash natively on macOS/Python 3.12'),
+)
 def test_run_with_progress(qapp):
     """The progress dialog closes whether the worker succeeds or fails"""
     from polylaue.ui.utils.run_with_progress import run_with_progress
