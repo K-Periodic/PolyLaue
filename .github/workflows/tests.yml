@@ -126,7 +126,10 @@ jobs:
       - name: Save verified release files
         uses: actions/upload-artifact@v7
         with:
-          name: polylaue-release-${{ github.ref_name }}
+          # Pull-request ref names contain a forbidden slash (for example,
+          # "1/merge"). Run IDs and attempt numbers are always safe and also
+          # keep artifacts from separate reruns distinct.
+          name: polylaue-release-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             dist/*.whl
             dist/*.tar.gz
