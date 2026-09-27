@@ -11,10 +11,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.13'
 
@@ -32,15 +32,17 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
+      # Report every supported platform/version result even if one job fails.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ['3.11', '3.12', '3.13', '3.14']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -58,19 +60,23 @@ jobs:
       - name: Run tests
         run: python -m pytest -v
         env:
+          # Select the headless Qt backend before PySide6 is imported. Setting
+          # this inside the QApplication fixture is too late on some runners.
+          QT_QPA_PLATFORM: 'offscreen'
+          PYTHONFAULTHANDLER: '1'
           SKIP_SLOW_TESTS: '1'
 
   package:
     needs: [lint, test]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # setuptools_scm needs the tag history to calculate a real version.
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -118,7 +124,7 @@ jobs:
           PY
 
       - name: Save verified release files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: polylaue-release-${{ github.ref_name }}
           path: |
