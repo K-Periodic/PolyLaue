@@ -510,6 +510,31 @@ def test_run_with_progress(qapp):
     assert qapp.activeModalWidget() is None
 
 
+def test_run_with_progress_waits_until_worker_returns(qapp, monkeypatch):
+    """Closing the dialog cannot release a still-running QRunnable"""
+    import importlib
+    import threading
+    import time
+    from polylaue.ui.async_worker import AsyncWorker
+
+    progress_module = importlib.import_module('polylaue.ui.utils.run_with_progress')
+    worker_returned = threading.Event()
+
+    class SlowReturnWorker(AsyncWorker):
+        def run(self):
+            # The inherited implementation emits finished before returning.
+            super().run()
+            time.sleep(0.1)
+            worker_returned.set()
+
+    monkeypatch.setattr(progress_module, 'AsyncWorker', SlowReturnWorker)
+
+    result, error = progress_module.run_with_progress('Working...', lambda: 42)
+    assert result == 42
+    assert error is None
+    assert worker_returned.is_set()
+
+
 def test_run_with_progress_cannot_be_dismissed(qapp):
     """Escape and closing the window do not end the wait early"""
     import time
@@ -680,32 +705,32 @@ def test_help_button_side(qapp):
             return super().styleHint(hint, option, widget, returnData)
 
     Layout = QDialogButtonBox.ButtonLayout
-    # Setting a style deletes the previous one, so restore it by name
-    previous_style = qapp.style().objectName()
-    styles = []
-    try:
-        # Windows keeps Help with the other buttons, the rest lead with it
-        for layout, on_left in [
-            (Layout.WinLayout, False),
-            (Layout.MacLayout, True),
-            (Layout.KdeLayout, True),
-            (Layout.GnomeLayout, True),
-        ]:
-            styles.append(ForceLayout(layout.value))
-            qapp.setStyle(styles[-1])
-            assert help_module.help_button_on_left() is on_left, layout
+    # Windows keeps Help with the other buttons, the rest lead with it
+    for layout, on_left in [
+        (Layout.WinLayout, False),
+        (Layout.MacLayout, True),
+        (Layout.KdeLayout, True),
+        (Layout.GnomeLayout, True),
+    ]:
+        style = ForceLayout(layout.value)
+        assert help_module.help_button_on_left(style) is on_left, layout
 
-            # A row of buttons agrees with the dialog button box
-            box = QDialogButtonBox(
-                QDialogButtonBox.StandardButton.Ok
-                | QDialogButtonBox.StandardButton.Help
-            )
+        # A row of buttons agrees with the dialog button box. Apply the test
+        # style only to this widget: QApplication.setStyle() takes ownership
+        # and deleting successive Python QProxyStyles can crash PySide.
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Help
+        )
+        box.setStyle(style)
+        try:
             box.adjustSize()
             help_button = box.button(QDialogButtonBox.StandardButton.Help)
             ok_button = box.button(QDialogButtonBox.StandardButton.Ok)
             assert (help_button.x() < ok_button.x()) is on_left, layout
-    finally:
-        qapp.setStyle(QStyleFactory.create(previous_style))
+        finally:
+            # QWidget does not own its explicitly assigned style. Restore the
+            # application style before the local proxy style is released.
+            box.setStyle(qapp.style())
 
 
 def test_help_buttons(qapp, monkeypatch):
