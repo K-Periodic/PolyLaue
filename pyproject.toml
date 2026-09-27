@@ -18,7 +18,7 @@ dependencies = [
     'scikit-image',
     'scipy',
 ]
-readme = 'REAMDE.md'
+readme = 'README.md'
 
 [project.scripts]
 polylaue = 'polylaue.main:main'

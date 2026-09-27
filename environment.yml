@@ -1,0 +1,19 @@
+name: polylaue-csl
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - fabio
+  - h5py
+  - numba
+  - numpy
+  - pillow
+  - platformdirs
+  - pyside6
+  - pyqtgraph
+  - scikit-image
+  - scipy
+  - pip
+  - setuptools
+  - setuptools_scm

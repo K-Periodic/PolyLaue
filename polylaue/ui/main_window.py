@@ -35,6 +35,7 @@ from polylaue.model.series import Series
 from polylaue.model.state import load_project_manager, save_project_manager
 from polylaue.ui.acquisition_times_dialog import AcquisitionTimesDialog
 from polylaue.ui.find_dialog import FindDialog
+from polylaue.ui.grain_orientation_dialog import GrainOrientationDialog
 from polylaue.ui.scan_position_coords_dialog import ScanPositionCoordsDialog
 from polylaue.ui.frame_tracker import FrameTracker
 from polylaue.ui.help import add_help_action
@@ -136,6 +137,9 @@ class MainWindow(QObject):
         )
         self.ui.action_indexing_find.triggered.connect(self.begin_indexing_find)
         self.ui.action_indexing_track.triggered.connect(self.begin_indexing_track)
+        self.ui.action_find_grain_orientation.triggered.connect(
+            self.begin_find_grain_orientation
+        )
         self.ui.action_select_indexing_points.triggered.connect(
             self.begin_select_indexing_points
         )
@@ -635,6 +639,9 @@ class MainWindow(QObject):
             dialog.set_scan_number(self.scan_num)
 
         self.reflections_editor.on_series_or_scan_changed()
+        dialog = getattr(self, '_grain_orientation_dialog', None)
+        if dialog is not None:
+            dialog.on_scan_changed()
 
     def on_hkls_changed(self):
         if hasattr(self, '_hkl_regions_navigator_dialog'):
@@ -879,6 +886,12 @@ class MainWindow(QObject):
         self.image_view.reflections = visible_reflections
 
         self.on_hkls_changed()
+        self.update_grain_orientation_action()
+
+    def update_grain_orientation_action(self):
+        reflections = self.reflections_editor.reflections
+        enabled = reflections is not None and reflections.num_crystals >= 2
+        self.ui.action_find_grain_orientation.setEnabled(enabled)
 
     def on_action_apply_background_subtraction_toggled(self):
         if self.series is None:
@@ -1058,6 +1071,24 @@ class MainWindow(QObject):
         dialog = TrackDialog(self.image_view, self.reflections_editor, self.ui)
         dialog.show()
         self._track_dialog = dialog
+
+    def begin_find_grain_orientation(self):
+        reflections = self.reflections_editor.reflections
+        if reflections is None or reflections.num_crystals < 2:
+            QMessageBox.warning(
+                self.ui,
+                'Not Enough Grains',
+                'Index at least two grains before finding their orientation.',
+            )
+            return
+
+        dialog = getattr(self, '_grain_orientation_dialog', None)
+        if dialog is None:
+            dialog = GrainOrientationDialog(self.reflections_editor, self.ui)
+            self._grain_orientation_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def begin_select_indexing_points(self):
         if self.series is None:
