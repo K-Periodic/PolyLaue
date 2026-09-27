@@ -117,6 +117,7 @@
     </property>
     <addaction name="action_indexing_find"/>
     <addaction name="action_indexing_track"/>
+    <addaction name="action_find_grain_orientation"/>
     <addaction name="separator"/>
     <addaction name="action_select_indexing_points"/>
    </widget>
@@ -140,6 +141,21 @@
    <addaction name="menu_indexing"/>
    <addaction name="menu_settings"/>
    <addaction name="menu_help"/>
+  </widget>
+  <widget class="QToolBar" name="orientation_toolbar">
+   <property name="windowTitle">
+    <string>Grain Orientation</string>
+   </property>
+   <property name="toolButtonStyle">
+    <enum>Qt::ToolButtonTextOnly</enum>
+   </property>
+   <attribute name="toolBarArea">
+    <enum>TopToolBarArea</enum>
+   </attribute>
+   <attribute name="toolBarBreak">
+    <bool>false</bool>
+   </attribute>
+   <addaction name="action_find_grain_orientation"/>
   </widget>
   <widget class="QStatusBar" name="status_bar"/>
   <action name="action_open_series">
@@ -217,6 +233,17 @@
   <action name="action_indexing_track">
    <property name="text">
     <string>Track/Refine</string>
+   </property>
+  </action>
+  <action name="action_find_grain_orientation">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Find Grain Orientation</string>
+   </property>
+   <property name="toolTip">
+    <string>Find the cubic orientation relationship and check exact CSL matches for two indexed grains</string>
    </property>
   </action>
   <action name="action_include_advanced_structures">

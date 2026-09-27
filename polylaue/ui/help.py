@@ -57,16 +57,21 @@ def help_button(page: str, parent: QWidget | None = None) -> QPushButton:
     return button
 
 
-def help_button_on_left() -> bool:
+def help_button_on_left(style: QStyle | None = None) -> bool:
     """Whether this platform puts the Help button first in a dialog
 
     Windows keeps it with the other buttons on the right, while macOS,
     KDE and GNOME put it on the left. This is the same rule that
     QDialogButtonBox follows.
+
+    ``style`` is primarily useful when checking the behavior of a specific
+    widget style. By default, use the application's current style.
     """
     # styleHint() returns a plain int, which never compares equal to the
     # enum member, so convert it first.
-    hint = QApplication.style().styleHint(QStyle.StyleHint.SH_DialogButtonLayout)
+    if style is None:
+        style = QApplication.style()
+    hint = style.styleHint(QStyle.StyleHint.SH_DialogButtonLayout)
     layout = QDialogButtonBox.ButtonLayout(hint)
     return layout != QDialogButtonBox.ButtonLayout.WinLayout
 

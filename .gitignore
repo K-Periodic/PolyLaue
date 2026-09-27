@@ -1,0 +1,15 @@
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Packaging products
+build/
+dist/
+*.egg-info/
+
+# Local environments and editor/OS metadata
+.venv/
+.DS_Store

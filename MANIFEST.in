@@ -1,2 +1,3 @@
 graft polylaue/resources
 graft polylaue/ui/resources
+include environment.yml

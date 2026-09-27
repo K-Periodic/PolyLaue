@@ -22,6 +22,10 @@ class ReflectionsEditor(QObject):
 
     reflections_changed = Signal()
 
+    """Emitted when the reflections file or its scientific content changes"""
+
+    reflections_data_changed = Signal()
+
     """Emitted when the prediction matcher should be started"""
     prediction_matcher_triggered = Signal()
 
@@ -78,6 +82,7 @@ class ReflectionsEditor(QObject):
     def clear(self):
         self.reflections = None
         self.update_info()
+        self.reflections_data_changed.emit()
         self.reflections_changed.emit()
 
     @property
@@ -119,6 +124,7 @@ class ReflectionsEditor(QObject):
 
         self.reflections = ExternalReflections(self.reflections_file_path)
         self.update_info()
+        self.reflections_data_changed.emit()
         self.reflections_changed.emit()
 
     def update_info(self):
@@ -188,6 +194,7 @@ class ReflectionsEditor(QObject):
         )
 
         def on_reflections_edited():
+            self.reflections_data_changed.emit()
             self.reflections_changed.emit()
             self.update_info()
 

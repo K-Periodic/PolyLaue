@@ -1,13 +1,14 @@
 # Copyright © 2026, UChicago Argonne, LLC. See "LICENSE" for full details.
 
 import os
+import sys
 
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from PySide6.QtCore import QPointF, QSettings
+from PySide6.QtCore import QObject, QPointF, QSettings, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -27,6 +28,7 @@ from polylaue.model.series import Series
 from polylaue.ui.acquisition_times_dialog import AcquisitionTimesDialog
 from polylaue.ui.editor import EditorDialog
 from polylaue.ui.frame_tracker import FrameTracker
+from polylaue.ui.grain_orientation_dialog import GrainOrientationDialog
 from polylaue.ui import help as help_module
 from polylaue.ui.hkl_regions_navigator.dialog import HklRegionsNavigatorDialog
 from polylaue.ui.image_view import PolyLaueImageView
@@ -35,6 +37,36 @@ from polylaue.ui.point_selector import PointSelectorDialog
 from polylaue.ui.poni_importer import PoniGeometry
 from polylaue.ui.reflections_editor import ReflectionsEditor
 from polylaue.ui.region_mapping.dialog import RegionMappingDialog
+
+
+class _StubReflections:
+    def __init__(self, matrices, scan_numbers=None, shifts=None):
+        self.crystals_table = np.asarray(matrices, dtype=float)
+        self.crystal_names = np.asarray(
+            [f'grain-{i}'.encode() for i in range(len(matrices))]
+        )
+        self._scan_numbers = scan_numbers or [0] * len(matrices)
+        self._shifts = shifts or {}
+
+    @property
+    def num_crystals(self):
+        return len(self.crystals_table)
+
+    def crystal_scan_number(self, crystal_id):
+        return self._scan_numbers[crystal_id]
+
+    def angular_shift_matrix(self, crystal_id, scan_number):
+        return self._shifts.get((crystal_id, scan_number))
+
+
+class _StubReflectionsEditor(QObject):
+    reflections_changed = Signal()
+    reflections_data_changed = Signal()
+
+    def __init__(self, reflections, scan_num=5):
+        super().__init__()
+        self.reflections = reflections
+        self.frame_tracker = FrameTracker(scan_num=scan_num)
 
 
 @pytest.fixture(scope='module')
@@ -53,6 +85,84 @@ def qapp(tmp_path_factory):
     if app is None:
         app = QApplication([])
     return app
+
+
+def test_grain_orientation_dialog_refreshes_changed_reflections(qapp):
+    abc = 5.0 * np.eye(3).ravel()
+    editor = _StubReflectionsEditor(_StubReflections([abc, abc]))
+    dialog = GrainOrientationDialog(editor)
+    dialog.orientation_report.setPlainText('old result')
+    dialog.csl_table.setRowCount(1)
+
+    # Visibility-only changes use the broad overlay signal and must not make a
+    # scientifically unchanged result disappear.
+    editor.reflections_changed.emit()
+    qapp.processEvents()
+    assert dialog.orientation_report.toPlainText() == 'old result'
+
+    editor.reflections = _StubReflections([abc])
+    editor.reflections_data_changed.emit()
+    qapp.processEvents()
+
+    assert dialog.grain_1.count() == 1
+    assert dialog.grain_2.count() == 1
+    assert not dialog.find_button.isEnabled()
+    assert not dialog.orientation_report.toPlainText()
+    assert 'reflections data changed' in dialog.csl_summary.text()
+    with pytest.raises(ValueError, match='no longer present'):
+        dialog._select_abc_matrix(1)
+
+    dialog.close()
+
+
+def test_grain_orientation_dialog_selects_tracked_and_legacy_matrices(qapp):
+    abc = 5.0 * np.eye(3).ravel()
+    shift = np.array(
+        [
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    ).ravel()
+    reflections = _StubReflections(
+        [abc, abc],
+        scan_numbers=[2, 0],
+        shifts={(0, 5): shift},
+    )
+    dialog = GrainOrientationDialog(_StubReflectionsEditor(reflections))
+
+    tracked = dialog._select_abc_matrix(0)
+    expected = (abc.reshape(3, 3) @ shift.reshape(3, 3)).ravel()
+    assert np.allclose(tracked.abc, expected)
+    assert tracked.source == 'tracked orientation at displayed scan 5'
+    assert tracked.warning is None
+
+    legacy = dialog._select_abc_matrix(1)
+    assert np.array_equal(legacy.abc, abc)
+    assert 'unknown scan' in legacy.source
+    assert 'unknown scan' in legacy.warning
+
+    dialog.close()
+
+
+def test_grain_orientation_dialog_invalidates_tracked_result_on_scan_change(qapp):
+    abc = 5.0 * np.eye(3).ravel()
+    editor = _StubReflectionsEditor(_StubReflections([abc, abc]))
+    dialog = GrainOrientationDialog(editor)
+    dialog.orientation_report.setPlainText('old tracked result')
+    dialog.csl_table.setRowCount(1)
+
+    dialog.on_scan_changed()
+
+    assert not dialog.orientation_report.toPlainText()
+    assert 'displayed scan changed' in dialog.csl_summary.text()
+
+    dialog.use_current_scan.setChecked(False)
+    dialog.orientation_report.setPlainText('stored-matrix result')
+    dialog.on_scan_changed()
+    assert dialog.orientation_report.toPlainText() == 'stored-matrix result'
+
+    dialog.close()
 
 
 def test_region_mapping_dialog_lock(qapp):
@@ -382,6 +492,12 @@ def test_hkl_map_notice_when_hkl_missing(qapp):
     assert dialog.image_item.image is not None
 
 
+@pytest.mark.skipif(
+    sys.platform == 'darwin'
+    and sys.version_info[:2] == (3, 12)
+    and os.environ.get('QT_QPA_PLATFORM') == 'offscreen',
+    reason=('PySide6 offscreen progress dialogs crash natively on macOS/Python 3.12'),
+)
 def test_run_with_progress(qapp):
     """The progress dialog closes whether the worker succeeds or fails"""
     from polylaue.ui.utils.run_with_progress import run_with_progress
@@ -399,6 +515,31 @@ def test_run_with_progress(qapp):
     assert error[0] is ValueError
     assert str(error[1]) == 'no good'
     assert qapp.activeModalWidget() is None
+
+
+def test_run_with_progress_waits_until_worker_returns(qapp, monkeypatch):
+    """Closing the dialog cannot release a still-running QRunnable"""
+    import importlib
+    import threading
+    import time
+    from polylaue.ui.async_worker import AsyncWorker
+
+    progress_module = importlib.import_module('polylaue.ui.utils.run_with_progress')
+    worker_returned = threading.Event()
+
+    class SlowReturnWorker(AsyncWorker):
+        def run(self):
+            # The inherited implementation emits finished before returning.
+            super().run()
+            time.sleep(0.1)
+            worker_returned.set()
+
+    monkeypatch.setattr(progress_module, 'AsyncWorker', SlowReturnWorker)
+
+    result, error = progress_module.run_with_progress('Working...', lambda: 42)
+    assert result == 42
+    assert error is None
+    assert worker_returned.is_set()
 
 
 def test_run_with_progress_cannot_be_dismissed(qapp):
@@ -571,32 +712,32 @@ def test_help_button_side(qapp):
             return super().styleHint(hint, option, widget, returnData)
 
     Layout = QDialogButtonBox.ButtonLayout
-    # Setting a style deletes the previous one, so restore it by name
-    previous_style = qapp.style().objectName()
-    styles = []
-    try:
-        # Windows keeps Help with the other buttons, the rest lead with it
-        for layout, on_left in [
-            (Layout.WinLayout, False),
-            (Layout.MacLayout, True),
-            (Layout.KdeLayout, True),
-            (Layout.GnomeLayout, True),
-        ]:
-            styles.append(ForceLayout(layout.value))
-            qapp.setStyle(styles[-1])
-            assert help_module.help_button_on_left() is on_left, layout
+    # Windows keeps Help with the other buttons, the rest lead with it
+    for layout, on_left in [
+        (Layout.WinLayout, False),
+        (Layout.MacLayout, True),
+        (Layout.KdeLayout, True),
+        (Layout.GnomeLayout, True),
+    ]:
+        style = ForceLayout(layout.value)
+        assert help_module.help_button_on_left(style) is on_left, layout
 
-            # A row of buttons agrees with the dialog button box
-            box = QDialogButtonBox(
-                QDialogButtonBox.StandardButton.Ok
-                | QDialogButtonBox.StandardButton.Help
-            )
+        # A row of buttons agrees with the dialog button box. Apply the test
+        # style only to this widget: QApplication.setStyle() takes ownership
+        # and deleting successive Python QProxyStyles can crash PySide.
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Help
+        )
+        box.setStyle(style)
+        try:
             box.adjustSize()
             help_button = box.button(QDialogButtonBox.StandardButton.Help)
             ok_button = box.button(QDialogButtonBox.StandardButton.Ok)
             assert (help_button.x() < ok_button.x()) is on_left, layout
-    finally:
-        qapp.setStyle(QStyleFactory.create(previous_style))
+        finally:
+            # QWidget does not own its explicitly assigned style. Restore the
+            # application style before the local proxy style is released.
+            box.setStyle(qapp.style())
 
 
 def test_help_buttons(qapp, monkeypatch):

@@ -52,13 +52,23 @@ def run_with_progress(
 
     outcome = {}
     worker = AsyncWorker(fn)
+    # The caller reports the returned traceback. Printing it from the worker
+    # thread as well is redundant and can race pytest's captured stderr.
+    worker.print_error_traceback = False
+    # The finished signal closes the dialog before QRunnable.run() has quite
+    # returned. Keep ownership on this (GUI) thread and use a private pool so
+    # that we can wait for this worker alone before releasing its Python and
+    # Qt signal objects.
+    worker.setAutoDelete(False)
+    pool = QThreadPool()
     worker.signals.result.connect(lambda result: outcome.update(result=result))
     worker.signals.error.connect(lambda error: outcome.update(error=error))
     # Connect to the C++ slot directly, so that closing the dialog cannot
     # be interrupted by an error in Python
     worker.signals.finished.connect(progress.reject)
 
-    QThreadPool.globalInstance().start(worker)
+    pool.start(worker)
     progress.exec()
+    pool.waitForDone()
 
     return outcome.get('result'), outcome.get('error')
