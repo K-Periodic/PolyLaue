@@ -10,9 +10,29 @@ Argonne National Laboratory.
 ## Status of this fork
 
 This experimental fork adds a **Grain Orientation and Cubic CSL** module. It
-calculates the raw misorientation, the minimum cubic disorientation, rotation
-axes in laboratory and crystal coordinates, and distances to exact cubic
-coincidence-site-lattice rotations.
+calculates raw misorientation, symmetry-reduced disorientation, and rotation
+axes for all seven crystal systems using the fixed, user-supplied cell. The
+dialog offers all 11 Laue classes, with explicit monoclinic unique-axis and
+trigonal hexagonal/rhombohedral settings. Both grains must represent the same
+phase and use the selected cell setting. The original cubic CSL checker is
+available when `m-3m` is selected.
+
+The stored ABC matrix contains the fixed direct-lattice vectors as rows.
+Orientation is calculated as `U = C^T A0^-1`, where the reference cell `A0`
+uses the indexer's convention: `c || Z`, `b` in the `YZ` plane, and a positive
+`X` component of `a`. Symmetries are transformed from fractional to Cartesian
+coordinates with `S = A0 W A0^-1`; incompatible cell metrics are rejected.
+Axis vectors are reported in laboratory and Cartesian crystal coordinates.
+Approximate `[uvw]` labels use the direct-lattice metric, `d = A0 [u v w]^T`.
+Hexagonal direction labels retain the existing three-index convention.
+No lattice refinement, polar decomposition, or higher-symmetry projection is
+performed. Symmetry is explicitly selected rather than inferred from cell
+lengths. Laue symmetry assumes Friedel equivalence.
+
+The equations and symmetry matrices are documented beside the numerical
+implementation in `polylaue/model/core/orientation_relationship.py`, with
+references to [Li, Wan & Chen (2015)](https://doi.org/10.1107/S1600576715004896)
+and [Glazer, Aroyo & Authier (2014)](https://doi.org/10.1107/S2053273314004495).
 
 The CSL result classifies a three-dimensional lattice orientation
 relationship. It does not determine the grain-boundary plane and, by itself,
@@ -59,7 +79,22 @@ polylaue
 ```
 
 Load a reflections file containing at least two indexed grains of the same
-cubic phase, then select **Indexing → Find Grain Orientation**.
+phase, then select **Indexing → Find Grain Orientation**. Choose the phase's
+Laue class and the cell setting used by the indexed ABC matrices. These
+selections are remembered after a successful calculation.
+
+The numerical checks require only NumPy and the Python standard library:
+
+```bash
+python -m unittest discover -s tests -p test_orientation_symmetries.py -v
+```
+
+In the full PolyLaue environment, the existing cubic tests and the dialog
+checks can also be run with:
+
+```bash
+python -m pytest tests/test_orientation_relationship.py tests/test_ui.py -k "orientation"
+```
 
 ## Install from a tagged source checkout
 

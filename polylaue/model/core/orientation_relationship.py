@@ -1,6 +1,6 @@
 # Copyright © 2026, UChicago Argonne, LLC. See "LICENSE" for full details.
 
-"""Grain-orientation relationships and cubic CSL identification.
+"""Fixed-cell grain-orientation relationships and cubic CSL identification.
 
 Conventions
 -----------
@@ -22,17 +22,35 @@ reciprocal reference bases, then
 
 
 
+For any fixed cell, A_0 is reconstructed in the same convention as find():
+c parallel to Z, b in the YZ plane, and a with a positive X component.
+No lattice parameters are refined. In this orthonormal crystal frame,
+
+    C^T = U A_0,          U = C^T A_0^-1.
+
+A crystallographic direction d = [u, v, w]^T is represented by A_0 d.
+An integer fractional-coordinate symmetry W is represented by the proper
+Cartesian rotation S = A_0 W A_0^-1, with W^T G W = G and G = A_0^T A_0.
+The selected Laue class supplies its proper rotational subgroup. Settings
+are explicit for monoclinic and trigonal cells; symmetry is not inferred
+from the cell metric. See International Tables for Crystallography A
+(2016), sections 1.3.2 and 1.3.4, and Glazer, Aroyo & Authier, Acta Cryst.
+A70 (2014) 300--302, DOI 10.1107/S2053273314004495, for the symmetry matrices.
+For direct/reciprocal coordinate transformations and angle--axis analysis
+of micro-Laue data, see Li, Wan & Chen, J. Appl. Cryst. 48 (2015) 747--757,
+DOI 10.1107/S1600576715004896, equations (3)--(7).
+
 For two grains, the relative orientation is written in the conventional
 crystal-coordinate form
 
     M = U_1^T U_2.
 
-For the 24 proper rotations ``S_i`` of the cubic point group, all
+For the proper rotations ``S_i`` of each selected crystal symmetry, all
 symmetry-equivalent relative orientations are
 
     M_ij = S_i^T M S_j.
 
-The cubic disorientation is the member with the smallest rotation angle.
+The disorientation is the member with the smallest rotation angle.
 The eigenvector with eigenvalue one is transformed back into the original
 coordinates of each grain, so the reported crystallographic direction pair
 and the laboratory rotation axis refer to the actual indexed grains.
@@ -76,9 +94,49 @@ import string
 import numpy as np
 
 
+LAUE_CLASSES = (
+    ('m-3m', 'Cubic m-3m'),
+    ('m-3', 'Cubic m-3'),
+    ('6/mmm', 'Hexagonal 6/mmm'),
+    ('6/m', 'Hexagonal 6/m'),
+    ('-3m', 'Trigonal -3m'),
+    ('-3', 'Trigonal -3'),
+    ('4/mmm', 'Tetragonal 4/mmm'),
+    ('4/m', 'Tetragonal 4/m'),
+    ('mmm', 'Orthorhombic mmm'),
+    ('2/m', 'Monoclinic 2/m'),
+    ('-1', 'Triclinic -1'),
+)
+
+
+def laue_class_settings(laue_class: str) -> tuple[tuple[str, str], ...]:
+    """Return the supported conventional axis settings for a Laue class."""
+
+    if laue_class not in dict(LAUE_CLASSES):
+        raise ValueError(f'Unknown Laue class: {laue_class}')
+    if laue_class == '2/m':
+        return (
+            ('unique-b', 'Unique axis b'),
+            ('unique-a', 'Unique axis a'),
+            ('unique-c', 'Unique axis c'),
+        )
+    if laue_class == '-3m':
+        return (
+            ('hexagonal-a', 'Hexagonal axes; twofold parallel to [100]'),
+            ('hexagonal-a-b', 'Hexagonal axes; twofold parallel to [1 -1 0]'),
+            ('rhombohedral', 'Rhombohedral axes; threefold parallel to [111]'),
+        )
+    if laue_class == '-3':
+        return (
+            ('hexagonal', 'Hexagonal axes; threefold parallel to [001]'),
+            ('rhombohedral', 'Rhombohedral axes; threefold parallel to [111]'),
+        )
+    return (('standard', 'Conventional axes'),)
+
+
 @dataclass(frozen=True)
-class CubicDisorientation:
-    """A minimum-angle representative of a cubic misorientation."""
+class Disorientation:
+    """A minimum-angle representative of a symmetry-equivalent rotation."""
 
     rotation: np.ndarray
     angle_deg: float
@@ -86,9 +144,17 @@ class CubicDisorientation:
     symmetry_2: np.ndarray
 
 
+# Preserve the existing cubic API used by the CSL catalogue.
+CubicDisorientation = Disorientation
+
+
 @dataclass(frozen=True)
 class OrientationRelationship:
-    """The raw and cubic-symmetry-reduced relationship of two cubic grains."""
+    """The raw and symmetry-reduced relationship of two same-phase grains.
+
+    axis_crystal_1 and axis_crystal_2 are Cartesian crystal-frame vectors.
+    axis_uvw_1 and axis_uvw_2 are approximate direct-lattice indices.
+    """
 
     orientation_1: np.ndarray
     orientation_2: np.ndarray
@@ -105,6 +171,8 @@ class OrientationRelationship:
     axis_uvw_error_deg_2: float
     symmetry_1: np.ndarray
     symmetry_2: np.ndarray
+    laue_class: str = 'm-3m'
+    setting: str = 'standard'
 
 
 @dataclass(frozen=True)
@@ -172,6 +240,128 @@ def proper_cubic_symmetry_operators() -> np.ndarray:
     return array
 
 
+@lru_cache(maxsize=None)
+def _fractional_symmetry_operators(laue_class: str, setting: str) -> np.ndarray:
+    """Generate proper symmetries W in direct-lattice coordinates.
+
+    The matrices below are the coordinate-triplet operations of
+    International Tables A (Glazer, Aroyo & Authier, 2014, Tables 1--3).
+    Cyclic groups are {W_n^k}; dihedral groups are
+    {W_n^k, W_n^k W_2}, k = 0, ..., n - 1.
+    """
+
+    settings = dict(laue_class_settings(laue_class))
+    if setting == 'standard':
+        setting = next(iter(settings))
+    if setting not in settings:
+        raise ValueError(f'Unsupported setting {setting!r} for {laue_class}')
+
+    if laue_class == 'm-3m':
+        return proper_cubic_symmetry_operators()
+    if laue_class == 'm-3':
+        # 23: even permutations, with an even number of sign reversals.
+        operators = np.array([
+            W for W in proper_cubic_symmetry_operators()
+            if round(np.linalg.det(np.abs(W))) == 1
+        ])
+    else:
+        W_2a = np.diag([1, -1, -1])
+        W_2b = np.diag([-1, 1, -1])
+        W_2c = np.diag([-1, -1, 1])
+        W_4 = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
+        W_6 = np.array([[1, -1, 0], [1, 0, 0], [0, 0, 1]])
+        W_3h = np.array([[0, -1, 0], [1, -1, 0], [0, 0, 1]])
+        W_3r = np.array([[0, 0, 1], [1, 0, 0], [0, 1, 0]])
+        W_2h_a = np.array([[1, -1, 0], [0, -1, 0], [0, 0, -1]])
+        W_2h_a_b = np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]])
+
+        W_n, n, W_2 = np.eye(3, dtype=int), 1, None
+        if laue_class == '2/m':
+            W_n = {'unique-a': W_2a, 'unique-b': W_2b, 'unique-c': W_2c}[setting]
+            n = 2
+        elif laue_class == 'mmm':
+            W_n, n, W_2 = W_2c, 2, W_2a
+        elif laue_class in ('4/m', '4/mmm'):
+            W_n, n = W_4, 4
+            if laue_class == '4/mmm':
+                W_2 = W_2a
+        elif laue_class in ('6/m', '6/mmm'):
+            W_n, n = W_6, 6
+            if laue_class == '6/mmm':
+                W_2 = W_2h_a
+        elif laue_class in ('-3', '-3m'):
+            W_n, n = (W_3r if setting == 'rhombohedral' else W_3h), 3
+            if laue_class == '-3m':
+                W_2 = W_2h_a if setting == 'hexagonal-a' else W_2h_a_b
+
+        cyclic = [np.linalg.matrix_power(W_n, k) for k in range(n)]
+        operators = np.array(
+            cyclic if W_2 is None else cyclic + [W @ W_2 for W in cyclic]
+        )
+    operators.setflags(write=False)
+    return operators
+
+
+def fixed_reference_basis(abc_matrix: np.ndarray) -> np.ndarray:
+    """Reconstruct A_0 without changing the stored fixed-cell metric.
+
+    C contains direct vectors a, b, c as rows. find() defines its reference
+    cell with c || Z and b in the YZ plane. Its oriented orthonormal frame is
+
+        e_z = c / |c|,  e_x = (b x c) / |b x c|,  e_y = e_z x e_x,
+        U = [e_x e_y e_z],  A_0 = U^T C^T,  C C^T = A_0^T A_0.
+
+    This is a coordinate construction, not a strain fit or a projection
+    onto a higher-symmetry cell. a must have a positive component along e_x.
+    """
+
+    C = np.asarray(abc_matrix, dtype=float).reshape(3, 3)
+    if not np.all(np.isfinite(C)):
+        raise ValueError('The ABC matrix contains a non-finite value')
+    lengths = np.linalg.norm(C, axis=1)
+    if np.any(lengths <= 0) or np.linalg.det(C) <= 1e-12 * np.prod(lengths):
+        raise ValueError('The ABC basis must be non-degenerate and right-handed')
+    e_z = C[2] / lengths[2]
+    e_x = np.cross(C[1], C[2])
+    e_x /= np.linalg.norm(e_x)
+    e_y = np.cross(e_z, e_x)
+    U = np.column_stack((e_x, e_y, e_z))
+    return U.T @ C.T
+
+
+def proper_crystal_symmetry_operators(
+    reference_basis: np.ndarray,
+    laue_class: str = 'm-3m',
+    setting: str = 'standard',
+    *,
+    tolerance: float = 1e-8,
+) -> np.ndarray:
+    """Return S = A_0 W A_0^-1 in the Cartesian crystal reference frame.
+
+    W^T G W = G, G = A_0^T A_0, is checked before any operator is used.
+    An incompatible metric is rejected; it is never symmetrized.
+    """
+
+    A_0 = np.asarray(reference_basis, dtype=float).reshape(3, 3)
+    if not np.all(np.isfinite(A_0)) or np.linalg.det(A_0) <= 0:
+        raise ValueError('The reference basis must be finite and right-handed')
+    G = A_0.T @ A_0
+    G /= np.max(np.abs(G))
+    A_0_inverse = np.linalg.inv(A_0)
+    operators = []
+    for W in _fractional_symmetry_operators(laue_class, setting):
+        residual = float(np.max(np.abs(W.T @ G @ W - G)))
+        if residual > tolerance:
+            raise ValueError(
+                f'The fixed cell is incompatible with Laue class {laue_class} '
+                f'and setting {setting}: max|W^T G W-G|/max|G|={residual:.3e}. '
+                'No projection or correction was applied.'
+            )
+        S = A_0 @ W @ A_0_inverse
+        operators.append(validate_rotation_matrix(S, tolerance=tolerance, name='S'))
+    return np.asarray(operators)
+
+
 def rotation_matrix_residuals(matrix: np.ndarray) -> tuple[float, float]:
     """Return orthogonality and proper determinant residuals for a matrix.
 
@@ -219,15 +409,18 @@ def abc_to_orientation(
     abc_matrix: np.ndarray,
     *,
     rotation_tolerance: float = 1e-8,
+    laue_class: str = 'm-3m',
+    setting: str = 'standard',
 ) -> np.ndarray:
-    """Calculate ``U`` directly from a fixed-cell cubic PolyLaue ABC matrix.
+    """Calculate U = C^T A_0^-1 from a fixed-cell PolyLaue ABC matrix.
 
     PolyLaue stores the oriented cubic direct basis as rows, so
 
         C = ABC = a U^T,       U = C^T / a.
 
-    The lattice parameter is the common length of the three stored direct
-    vectors.
+    The default m-3m path retains the original cubic calculation exactly.
+    Other classes use the reference convention in fixed_reference_basis().
+    The selected symmetry must preserve the stored cell metric.
     """
 
     abc = np.asarray(abc_matrix, dtype=float)
@@ -238,6 +431,18 @@ def abc_to_orientation(
     if not np.all(np.isfinite(abc)):
         raise ValueError('The ABC matrix contains a non-finite value')
 
+    if laue_class != 'm-3m':
+        A_0 = fixed_reference_basis(abc)
+        proper_crystal_symmetry_operators(
+            A_0, laue_class, setting, tolerance=rotation_tolerance
+        )
+        U = abc.T @ np.linalg.inv(A_0)
+        return validate_rotation_matrix(
+            U, tolerance=rotation_tolerance, name='U = C^T A_0^-1'
+        )
+
+    # Validate the setting even in the unchanged cubic path.
+    _fractional_symmetry_operators(laue_class, setting)
     # The first stored direct vector has the fixed cubic length a.  The
     # subsequent proper-rotation validation independently checks that all
     # three vectors have that same length and are mutually perpendicular.
@@ -366,7 +571,10 @@ def rotation_axis(matrix: np.ndarray) -> np.ndarray:
     """
 
     rotation = validate_rotation_matrix(matrix)
-    if rotation_angle_deg(rotation) < 1e-10:
+    if (
+        np.max(np.abs(rotation - np.eye(3))) < 1e-12
+        or rotation_angle_deg(rotation) < 1e-10
+    ):
         return np.full(3, np.nan)
 
     eigenvalues, eigenvectors = np.linalg.eig(rotation)
@@ -389,15 +597,20 @@ def _canonical_matrix_key(matrix: np.ndarray) -> tuple[float, ...]:
     return tuple(np.round(validate_rotation_matrix(matrix).ravel(), 12))
 
 
-def reduce_cubic_misorientation(matrix: np.ndarray) -> CubicDisorientation:
-    """Reduce a relative rotation over both cubic crystal symmetries.
+def reduce_misorientation(
+    matrix: np.ndarray,
+    symmetries_1: np.ndarray,
+    symmetries_2: np.ndarray | None = None,
+) -> Disorientation:
+    """Find the minimum-angle representative M_ij = S_i^T M S_j.
 
-    The calculation explicitly tests all 24 x 24 combinations.  Tied
+    Each S is a proper rotation in the Cartesian frame of its own crystal.
+    If symmetries_2 is omitted, both grains use symmetries_1. Tied
     minimum-angle representatives are resolved deterministically; the angle
     is independent of that tie-breaking choice.
 
     For identical symmetry groups, cyclic invariance of the trace and group
-    closure reduce the minimum *angle* to a one-sided 24-operation search:
+    closure also permit a one-sided search for the minimum angle:
 
         tr(S_i^T M S_j) = tr(M S_j S_i^T),  S_j S_i^T in G.
 
@@ -408,17 +621,29 @@ def reduce_cubic_misorientation(matrix: np.ndarray) -> CubicDisorientation:
     """
 
     matrix = validate_rotation_matrix(matrix)
-    symmetries = proper_cubic_symmetry_operators()
+    symmetries_1 = np.asarray(symmetries_1, dtype=float)
+    symmetries_2 = symmetries_1 if symmetries_2 is None else np.asarray(
+        symmetries_2, dtype=float
+    )
+    for operators in (symmetries_1, symmetries_2):
+        if operators.ndim != 3 or operators.shape[1:] != (3, 3) or not len(operators):
+            raise ValueError('Symmetries must be a non-empty array of 3 x 3 rotations')
+        for S in operators:
+            validate_rotation_matrix(S, name='Symmetry operator')
 
     # variants[i, j] = S_i.T @ matrix @ S_j
     variants = np.einsum(
         'aij,jk,bkl->abil',
-        symmetries.transpose(0, 2, 1),
+        symmetries_1.transpose(0, 2, 1),
         matrix,
-        symmetries,
+        symmetries_2,
     )
     traces = np.trace(variants, axis1=2, axis2=3)
     angles = np.arccos(np.clip((traces - 1.0) / 2.0, -1.0, 1.0))
+    # A numerically identical pair has no unique axis. This addresses only
+    # roundoff in the basis transformations, not experimental uncertainty.
+    identities = np.max(np.abs(variants - np.eye(3)), axis=(2, 3)) < 1e-12
+    angles[identities] = 0.0
     minimum = float(np.min(angles))
 
     tied_indices = np.argwhere(np.abs(angles - minimum) <= 1e-10)
@@ -428,12 +653,18 @@ def reduce_cubic_misorientation(matrix: np.ndarray) -> CubicDisorientation:
         choices.append((_canonical_matrix_key(candidate), int(i), int(j)))
 
     _, i, j = min(choices, key=lambda item: item[0])
-    return CubicDisorientation(
+    return Disorientation(
         rotation=variants[i, j].copy(),
         angle_deg=math.degrees(minimum),
-        symmetry_1=symmetries[i].copy(),
-        symmetry_2=symmetries[j].copy(),
+        symmetry_1=symmetries_1[i].copy(),
+        symmetry_2=symmetries_2[j].copy(),
     )
+
+
+def reduce_cubic_misorientation(matrix: np.ndarray) -> CubicDisorientation:
+    """Retain the cubic API: test all 24 x 24 proper cubic symmetries."""
+
+    return reduce_misorientation(matrix, proper_cubic_symmetry_operators())
 
 
 def _reduce_unoriented_cubic_rotation(matrix: np.ndarray) -> CubicDisorientation:
@@ -479,12 +710,18 @@ def _primitive_directions(max_index: int) -> tuple[tuple[int, int, int], ...]:
 def nearest_lattice_direction(
     vector: np.ndarray,
     max_index: int = 6,
+    *,
+    reference_basis: np.ndarray | None = None,
 ) -> tuple[tuple[int, int, int] | None, float]:
     """Return the nearest primitive integer direction and angular residual.
 
     The result is an approximation unless the residual is numerically zero.
     The direction is a line, so ``[u v w]`` and ``[-u -v -w]`` are treated as
     equivalent.
+
+    With columns A_0 = [a_0 b_0 c_0], the angular comparison is
+    cos(phi) = |v . (A_0 d)| / (|v| |A_0 d|), d = [u, v, w]^T.
+    Omitting A_0 retains the original cubic integer-direction calculation.
     """
 
     vector = np.asarray(vector, dtype=float).reshape(3)
@@ -492,12 +729,21 @@ def nearest_lattice_direction(
     if not np.isfinite(magnitude) or magnitude < 1e-12:
         return None, math.nan
     vector = vector / magnitude
+    A_0 = None if reference_basis is None else np.asarray(
+        reference_basis, dtype=float
+    ).reshape(3, 3)
+    if A_0 is not None and (
+        not np.all(np.isfinite(A_0)) or np.linalg.det(A_0) <= 0
+    ):
+        raise ValueError('The reference basis must be finite and right-handed')
 
     best_direction = None
     best_cosine = -1.0
     best_norm_squared = math.inf
     for direction in _primitive_directions(max_index):
         direction_array = np.asarray(direction, dtype=float)
+        if A_0 is not None:
+            direction_array = A_0 @ direction_array
         norm_squared = float(direction_array @ direction_array)
         cosine = abs(float(vector @ direction_array) / math.sqrt(norm_squared))
         if cosine > best_cosine + 1e-14 or (
@@ -525,11 +771,22 @@ def analyze_orientation_relationship(
     abc_matrix_1: np.ndarray,
     abc_matrix_2: np.ndarray,
     direction_max_index: int = 6,
+    *,
+    laue_class: str = 'm-3m',
+    setting: str = 'standard',
 ) -> OrientationRelationship:
-    """Calculate raw and cubic-reduced relationships between two ABC matrices."""
+    """Calculate raw and symmetry-reduced relationships of two fixed cells.
 
-    orientation_1 = abc_to_orientation(abc_matrix_1)
-    orientation_2 = abc_to_orientation(abc_matrix_2)
+    Both grains are assumed to be the same phase, with the selected Laue
+    class and cell setting. Phase identity is not inferred or verified.
+    """
+
+    orientation_1 = abc_to_orientation(
+        abc_matrix_1, laue_class=laue_class, setting=setting
+    )
+    orientation_2 = abc_to_orientation(
+        abc_matrix_2, laue_class=laue_class, setting=setting
+    )
 
     # M maps grain-2 crystal components into grain-1 crystal components for
     # the same laboratory vector.
@@ -538,7 +795,17 @@ def analyze_orientation_relationship(
         name='M = U1^T U2',
     )
     raw_angle = rotation_angle_deg(raw)
-    reduced = reduce_cubic_misorientation(raw)
+    A_01 = A_02 = None
+    if laue_class == 'm-3m':
+        reduced = reduce_cubic_misorientation(raw)
+    else:
+        A_01 = orientation_1.T @ np.asarray(abc_matrix_1).reshape(3, 3).T
+        A_02 = orientation_2.T @ np.asarray(abc_matrix_2).reshape(3, 3).T
+        reduced = reduce_misorientation(
+            raw,
+            proper_crystal_symmetry_operators(A_01, laue_class, setting),
+            proper_crystal_symmetry_operators(A_02, laue_class, setting),
+        )
     reduced_axis = rotation_axis(reduced.rotation)
 
     if np.any(np.isnan(reduced_axis)):
@@ -559,10 +826,10 @@ def analyze_orientation_relationship(
             axis_crystal_2 *= -1
 
     uvw_1, uvw_error_1 = nearest_lattice_direction(
-        axis_crystal_1, max_index=direction_max_index
+        axis_crystal_1, max_index=direction_max_index, reference_basis=A_01
     )
     uvw_2, uvw_error_2 = nearest_lattice_direction(
-        axis_crystal_2, max_index=direction_max_index
+        axis_crystal_2, max_index=direction_max_index, reference_basis=A_02
     )
 
     return OrientationRelationship(
@@ -581,6 +848,8 @@ def analyze_orientation_relationship(
         axis_uvw_error_deg_2=uvw_error_2,
         symmetry_1=reduced.symmetry_1,
         symmetry_2=reduced.symmetry_2,
+        laue_class=laue_class,
+        setting=setting,
     )
 
 

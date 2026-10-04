@@ -5,7 +5,7 @@
 from dataclasses import dataclass
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -29,9 +29,11 @@ from PySide6.QtWidgets import (
 )
 
 from polylaue.model.core import (
+    LAUE_CLASSES,
     OrientationRelationship,
     analyze_orientation_relationship,
     apply_angular_shift,
+    laue_class_settings,
     match_cubic_csls,
     rotation_matrix_residuals,
 )
@@ -65,6 +67,16 @@ class GrainOrientationDialog(QDialog):
 
         self._build_ui()
         self._connect_signals()
+        settings = QSettings()
+        index = self.laue_class_combo.findData(
+            settings.value('grain_orientation/laue_class', 'm-3m')
+        )
+        self.laue_class_combo.setCurrentIndex(max(index, 0))
+        self._on_symmetry_changed()
+        index = self.cell_setting_combo.findData(
+            settings.value('grain_orientation/cell_setting', 'standard')
+        )
+        self.cell_setting_combo.setCurrentIndex(max(index, 0))
         self._populate_grains()
 
     def _build_ui(self):
@@ -72,17 +84,31 @@ class GrainOrientationDialog(QDialog):
 
         explanation = QLabel(
             'Select two indexed grains. The calculation reports the raw '
-            'rotation, the minimum cubic disorientation, its crystallographic '
-            'axis in both grains, and full-rotation matches to exact cubic CSLs.'
+            'rotation, the minimum disorientation under the selected Laue '
+            'symmetry, and its axis in both grains. Both grains must be the '
+            'same phase and use the selected cell setting. The cubic CSL '
+            'checker is available for m-3m.'
         )
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
 
-        controls_group = QGroupBox('Grains and CSL settings')
+        controls_group = QGroupBox('Grains, symmetry and CSL settings')
         controls = QGridLayout(controls_group)
 
         self.grain_1 = QComboBox()
         self.grain_2 = QComboBox()
+        self.laue_class_combo = QComboBox()
+        for symbol, label in LAUE_CLASSES:
+            self.laue_class_combo.addItem(label, symbol)
+        self.cell_setting_combo = QComboBox()
+        self.laue_class_combo.setToolTip(
+            'Select the phase Laue class explicitly. Cell lengths alone do '
+            'not determine the phase symmetry.'
+        )
+        self.cell_setting_combo.setToolTip(
+            'The symmetry axes must match the direct-lattice indices in '
+            'the stored ABC matrices.'
+        )
         self.use_current_scan = QCheckBox(
             'Use tracked orientation at the displayed scan when available'
         )
@@ -112,12 +138,16 @@ class GrainOrientationDialog(QDialog):
         controls.addWidget(self.grain_1, 0, 1)
         controls.addWidget(QLabel('Grain 2:'), 0, 2)
         controls.addWidget(self.grain_2, 0, 3)
-        controls.addWidget(self.use_current_scan, 1, 0, 1, 4)
-        controls.addWidget(QLabel('Maximum Σ:'), 2, 0)
-        controls.addWidget(self.max_sigma, 2, 1)
-        controls.addWidget(QLabel('Brandon constant:'), 2, 2)
-        controls.addWidget(self.brandon_constant, 2, 3)
-        controls.addWidget(self.find_button, 3, 0, 1, 4)
+        controls.addWidget(QLabel('Laue class:'), 1, 0)
+        controls.addWidget(self.laue_class_combo, 1, 1)
+        controls.addWidget(QLabel('Cell setting:'), 1, 2)
+        controls.addWidget(self.cell_setting_combo, 1, 3)
+        controls.addWidget(self.use_current_scan, 2, 0, 1, 4)
+        controls.addWidget(QLabel('Maximum Σ:'), 3, 0)
+        controls.addWidget(self.max_sigma, 3, 1)
+        controls.addWidget(QLabel('Brandon constant:'), 3, 2)
+        controls.addWidget(self.brandon_constant, 3, 3)
+        controls.addWidget(self.find_button, 4, 0, 1, 4)
         controls.setColumnStretch(1, 1)
         controls.setColumnStretch(3, 1)
         layout.addWidget(controls_group)
@@ -184,6 +214,8 @@ class GrainOrientationDialog(QDialog):
 
     def _connect_signals(self):
         self.find_button.clicked.connect(self.calculate)
+        self.laue_class_combo.currentIndexChanged.connect(self._on_symmetry_changed)
+        self.cell_setting_combo.currentIndexChanged.connect(self._inputs_changed)
         self.grain_1.currentIndexChanged.connect(self._prevent_same_grain)
         self.grain_2.currentIndexChanged.connect(self._prevent_same_grain)
         self.grain_1.currentIndexChanged.connect(self._inputs_changed)
@@ -194,6 +226,34 @@ class GrainOrientationDialog(QDialog):
         self.reflections_editor.reflections_data_changed.connect(
             self._on_reflections_changed
         )
+
+    @property
+    def laue_class(self) -> str:
+        return self.laue_class_combo.currentData()
+
+    @property
+    def cell_setting(self) -> str:
+        return self.cell_setting_combo.currentData()
+
+    def _on_symmetry_changed(self, *args):
+        previous = self.cell_setting
+        self.cell_setting_combo.blockSignals(True)
+        self.cell_setting_combo.clear()
+        options = laue_class_settings(self.laue_class)
+        for setting, label in options:
+            self.cell_setting_combo.addItem(label, setting)
+        self.cell_setting_combo.setCurrentIndex(
+            max(self.cell_setting_combo.findData(previous), 0)
+        )
+        self.cell_setting_combo.setEnabled(len(options) > 1)
+        self.cell_setting_combo.blockSignals(False)
+        cubic = self.laue_class == 'm-3m'
+        self.max_sigma.setEnabled(cubic)
+        self.brandon_constant.setEnabled(cubic)
+        self.tabs.setTabEnabled(1, cubic)
+        if not cubic:
+            self.tabs.setCurrentIndex(0)
+        self._inputs_changed()
 
     @property
     def reflections(self) -> ExternalReflections | None:
@@ -370,15 +430,15 @@ class GrainOrientationDialog(QDialog):
         orthogonality_2, determinant_2 = rotation_matrix_residuals(
             relationship.orientation_2
         )
-        lattice_parameter_1 = float(
-            np.linalg.norm(np.asarray(selected_1.abc).reshape(3, 3)[0])
-        )
-        lattice_parameter_2 = float(
-            np.linalg.norm(np.asarray(selected_2.abc).reshape(3, 3)[0])
-        )
+        C_1 = np.asarray(selected_1.abc).reshape(3, 3)
+        C_2 = np.asarray(selected_2.abc).reshape(3, 3)
+        cell_lengths_1 = ', '.join(f'{x:.8g}' for x in np.linalg.norm(C_1, axis=1))
+        cell_lengths_2 = ', '.join(f'{x:.8g}' for x in np.linalg.norm(C_2, axis=1))
         lines = [
-            'CUBIC GRAIN ORIENTATION RELATIONSHIP',
+            'GRAIN ORIENTATION RELATIONSHIP',
             '=====================================',
+            f'Laue class: {relationship.laue_class}',
+            f'Cell setting: {self.cell_setting_combo.currentText()}',
             f'Grain 1: {self._grain_label(crystal_id_1)}',
             f'  source: {selected_1.source}',
             f'Grain 2: {self._grain_label(crystal_id_2)}',
@@ -399,24 +459,29 @@ class GrainOrientationDialog(QDialog):
             [
                 f'Raw relative rotation angle:        '
                 f'{relationship.raw_angle_deg:.8f}°',
-                f'Cubic minimum disorientation angle: '
+                f'Minimum disorientation angle:       '
                 f'{relationship.angle_deg:.8f}°',
                 '',
                 'DIRECT FIXED-CELL ORIENTATION VALIDATION',
                 '----------------------------------------',
-                f'Grain {crystal_id_1}: a={lattice_parameter_1:.8g}, '
+                f'Grain {crystal_id_1}: (a,b,c)=({cell_lengths_1}), '
                 f'max|U^T U-I|={orthogonality_1:.3e}, '
                 f'|det(U)-1|={determinant_1:.3e}',
-                f'Grain {crystal_id_2}: a={lattice_parameter_2:.8g}, '
+                f'Grain {crystal_id_2}: (a,b,c)=({cell_lengths_2}), '
                 f'max|U^T U-I|={orthogonality_2:.3e}, '
                 f'|det(U)-1|={determinant_2:.3e}',
+                'Fixed reference bases A0 (direct vectors as columns):',
+                f'  Grain {crystal_id_1}:',
+                self._format_matrix(relationship.orientation_1.T @ C_1.T),
+                f'  Grain {crystal_id_2}:',
+                self._format_matrix(relationship.orientation_2.T @ C_2.T),
                 '',
                 'DISORIENTATION AXIS',
                 '-------------------',
                 f'Laboratory coordinates: {self._format_vector(relationship.axis_lab)}',
-                f'Grain {crystal_id_1} crystal coordinates: '
+                f'Grain {crystal_id_1} Cartesian crystal coordinates: '
                 f'{self._format_vector(relationship.axis_crystal_1)}',
-                f'Grain {crystal_id_2} crystal coordinates: '
+                f'Grain {crystal_id_2} Cartesian crystal coordinates: '
                 f'{self._format_vector(relationship.axis_crystal_2)}',
                 '',
                 'Nearest primitive low-index directions (|index| <= 6):',
@@ -439,7 +504,7 @@ class GrainOrientationDialog(QDialog):
                     f' (grain {crystal_id_1})  ∥  '
                     f'{self._format_direction(relationship.axis_uvw_2)}'
                     f' (grain {crystal_id_2})',
-                    f'with a cubic disorientation of {relationship.angle_deg:.8f}°.',
+                    f'with a disorientation of {relationship.angle_deg:.8f}°.',
                     'The integer directions are approximations unless their '
                     'reported residuals are zero; the vectors above are the '
                     'calculated axes.',
@@ -451,35 +516,42 @@ class GrainOrientationDialog(QDialog):
             [
                 'DISORIENTATION MATRIX',
                 '---------------------',
-                'Maps symmetry-equivalent grain-2 cubic coordinates into '
-                'grain-1 cubic coordinates:',
+                'Maps symmetry-equivalent grain-2 Cartesian crystal coordinates '
+                'into grain-1 Cartesian crystal coordinates:',
                 self._format_matrix(relationship.disorientation),
                 '',
                 'RAW MISORIENTATION MATRIX',
                 '-------------------------',
-                'M = U1^T U2 (before cubic symmetry reduction):',
+                'M = U1^T U2 (before symmetry reduction):',
                 self._format_matrix(relationship.raw_misorientation),
                 '',
-                'Method: for each fixed cubic ABC matrix C, the orientation '
-                'is calculated directly as U = C^T/a. U^T U = I and '
-                'det(U) = +1 are validated; no matrix projection or metric '
-                'refinement is applied. All 24 x 24 proper cubic symmetry '
-                'combinations are then tested.',
-                'Exact CSL references use Ranganathan axis–angle parameters '
-                'and the explicit rational 3 x 3 rotation matrix. Sigma is '
-                'its reduced common denominator.',
-                'Assumption: both selected grains represent the same cubic '
-                'phase and parent lattice. Phase identity and boundary-plane '
+                'Method: C stores the fixed direct vectors as rows. '
+                'U = C^T A0^-1, where A0 uses c || Z, b in the YZ plane '
+                'and a with positive X component. For cubic m-3m, A0=aI '
+                'and the original U=C^T/a calculation is retained.',
+                'Proper symmetries satisfy S=A0 W A0^-1 and W^T G W=G, '
+                'G=A0^T A0. All pairs Mij=Si^T M Sj are tested; the '
+                'minimum rotation angle defines the disorientation. '
+                'U^T U=I and det(U)=+1 are validated. '
+                'No matrix projection or lattice refinement is applied.',
+                'Axis directions use d=A0 [u v w]^T. The reported crystal '
+                'vectors are Cartesian; [uvw] labels use the direct-lattice metric.',
+                'Assumption: both selected grains represent the same '
+                'phase and selected cell setting. Phase identity and boundary-plane '
                 'geometry are not validated by this calculation.',
-                'CSL references: Ranganathan, Acta Cryst. 21 (1966) '
-                '197–199; Grimmer, Bollmann & Warrington, Acta Cryst. A30 '
-                '(1974) 197–207. Brandon acceptance: Acta Metall. 14 '
-                '(1966) 1479–1484.',
+                'Coordinate transformations: Li, Wan & Chen, J. Appl. Cryst. '
+                '48 (2015) 747-757, equations (3)-(7). Symmetry matrices: '
+                'Glazer, Aroyo & Authier, Acta Cryst. A70 (2014) 300-302, '
+                'Tables 1-3. Laue symmetry assumes Friedel equivalence.',
             ]
         )
         return '\n'.join(lines)
 
     def _populate_csl_results(self, relationship: OrientationRelationship):
+        if relationship.laue_class != 'm-3m':
+            self.csl_table.setRowCount(0)
+            self.csl_summary.setText('The cubic CSL checker requires m-3m symmetry.')
+            return
         matches = match_cubic_csls(
             relationship.raw_misorientation,
             max_sigma=self.max_sigma.value(),
@@ -563,6 +635,8 @@ class GrainOrientationDialog(QDialog):
             relationship = analyze_orientation_relationship(
                 selected_1.abc,
                 selected_2.abc,
+                laue_class=self.laue_class,
+                setting=self.cell_setting,
             )
             report = self._orientation_text(
                 relationship,
@@ -573,6 +647,9 @@ class GrainOrientationDialog(QDialog):
             )
             self.orientation_report.setPlainText(report)
             self._populate_csl_results(relationship)
+            settings = QSettings()
+            settings.setValue('grain_orientation/laue_class', self.laue_class)
+            settings.setValue('grain_orientation/cell_setting', self.cell_setting)
         except (
             IndexError,
             KeyError,

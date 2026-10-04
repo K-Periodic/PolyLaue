@@ -165,6 +165,84 @@ def test_grain_orientation_dialog_invalidates_tracked_result_on_scan_change(qapp
     dialog.close()
 
 
+def test_grain_orientation_dialog_non_cubic_report_skips_csl(qapp, monkeypatch):
+    settings = QSettings()
+    settings.remove('grain_orientation')
+    C = np.diag([3.0, 3.0, 5.0]).ravel()
+    dialog = GrainOrientationDialog(_StubReflectionsEditor(_StubReflections([C, C])))
+    errors = []
+    monkeypatch.setattr(QMessageBox, 'critical', lambda *args: errors.append(args[-1]))
+
+    def unexpected_csl(*args, **kwargs):
+        raise AssertionError(
+            'Non-cubic orientations must not enter the cubic CSL matcher'
+        )
+
+    monkeypatch.setattr(
+        'polylaue.ui.grain_orientation_dialog.match_cubic_csls', unexpected_csl
+    )
+    try:
+        dialog.laue_class_combo.setCurrentIndex(
+            dialog.laue_class_combo.findData('4/mmm')
+        )
+        dialog.calculate()
+        assert not errors
+        assert 'Laue class: 4/mmm' in dialog.orientation_report.toPlainText()
+        assert 'not unique (zero disorientation)' in (
+            dialog.orientation_report.toPlainText()
+        )
+        assert not dialog.tabs.isTabEnabled(1)
+        assert not dialog.max_sigma.isEnabled()
+        assert dialog.csl_table.rowCount() == 0
+    finally:
+        dialog.close()
+        settings.remove('grain_orientation')
+
+
+def test_grain_orientation_dialog_symmetry_changes_clear_results(qapp):
+    settings = QSettings()
+    settings.remove('grain_orientation')
+    C = 5.0 * np.eye(3).ravel()
+    dialog = GrainOrientationDialog(_StubReflectionsEditor(_StubReflections([C, C])))
+    dialog.orientation_report.setPlainText('old cubic result')
+    dialog.csl_table.setRowCount(1)
+    dialog.laue_class_combo.setCurrentIndex(dialog.laue_class_combo.findData('2/m'))
+    assert not dialog.orientation_report.toPlainText()
+    assert dialog.csl_table.rowCount() == 0
+    assert dialog.cell_setting_combo.count() == 3
+    assert dialog.cell_setting == 'unique-b'
+    assert not dialog.tabs.isTabEnabled(1)
+
+    dialog.laue_class_combo.setCurrentIndex(dialog.laue_class_combo.findData('m-3m'))
+    assert dialog.tabs.isTabEnabled(1)
+    assert dialog.max_sigma.isEnabled()
+    assert dialog.brandon_constant.isEnabled()
+    dialog.close()
+
+
+def test_grain_orientation_dialog_remembers_selected_symmetry_and_setting(qapp):
+    settings = QSettings()
+    settings.remove('grain_orientation')
+    C = np.diag([3.0, 4.0, 5.0]).ravel()
+    editor = _StubReflectionsEditor(_StubReflections([C, C]))
+    first = GrainOrientationDialog(editor)
+    restored = None
+    try:
+        first.laue_class_combo.setCurrentIndex(first.laue_class_combo.findData('2/m'))
+        first.cell_setting_combo.setCurrentIndex(
+            first.cell_setting_combo.findData('unique-a')
+        )
+        first.calculate()
+        restored = GrainOrientationDialog(editor)
+        assert restored.laue_class == '2/m'
+        assert restored.cell_setting == 'unique-a'
+    finally:
+        first.close()
+        if restored is not None:
+            restored.close()
+        settings.remove('grain_orientation')
+
+
 def test_region_mapping_dialog_lock(qapp):
     roi_manager = ROIManager()
     roi_id = roi_manager.add_roi((10, 20), (30, 30))

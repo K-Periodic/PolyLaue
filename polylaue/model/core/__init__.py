@@ -13,6 +13,8 @@ from .burn_reflections import (
 )
 from .find import find, find_py
 from .orientation_relationship import (
+    LAUE_CLASSES,
+    Disorientation,
     CubicCsl,
     CubicCslMatch,
     CubicDisorientation,
@@ -22,9 +24,13 @@ from .orientation_relationship import (
     axis_angle_rotation_matrix,
     cubic_csl_rotation_matrix,
     generate_cubic_csls,
+    fixed_reference_basis,
+    laue_class_settings,
     match_cubic_csls,
     nearest_lattice_direction,
     proper_cubic_symmetry_operators,
+    proper_crystal_symmetry_operators,
+    reduce_misorientation,
     reduce_cubic_misorientation,
     rotation_angle_deg,
     rotation_axis,
