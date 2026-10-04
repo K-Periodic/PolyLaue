@@ -25,8 +25,7 @@ coordinates with `S = A0 W A0^-1`; incompatible cell metrics are rejected.
 Axis vectors are reported in laboratory and Cartesian crystal coordinates.
 Approximate `[uvw]` labels use the direct-lattice metric, `d = A0 [u v w]^T`.
 Hexagonal direction labels retain the existing three-index convention.
-No lattice refinement, polar decomposition, or higher-symmetry projection is
-performed. Symmetry is explicitly selected rather than inferred from cell
+Symmetry is explicitly selected rather than inferred from cell
 lengths. Laue symmetry assumes Friedel equivalence.
 
 The equations and symmetry matrices are documented beside the numerical
